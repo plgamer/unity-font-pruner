@@ -1,0 +1,9 @@
+.DS_Store
+Thumbs.db
+*.swp
+
+# Editor/Tools~/ 必须进仓库，否则 sfnttool.jar 丢失、工具直接不可用。
+# Unity 靠结尾的 ~ 跳过该目录（jar 不会被导入成资产），但 git 必须提交它。
+# 很多人的全局 gitignore 里有 `*~`（排除编辑器备份文件），那条规则会连
+# 整个 Tools~ 目录一起吃掉。仓库级规则优先级高于全局，这里显式抵消掉：
+!Editor/Tools~/

@@ -1,0 +1,20 @@
+{
+    "name": "FontPruner.Editor",
+    "rootNamespace": "FontPrunerTool",
+    "references": [
+        "Unity.TextMeshPro",
+        "Unity.Localization",
+        "Unity.Localization.Editor"
+    ],
+    "includePlatforms": [
+        "Editor"
+    ],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}

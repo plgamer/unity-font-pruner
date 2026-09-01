@@ -1,0 +1,26 @@
+{
+  "name": "com.plgamer.fontpruner",
+  "version": "1.0.0",
+  "displayName": "Font Pruner",
+  "description": "Editor tool that subsets TTF fonts down to just the characters your game actually uses. Collect characters by hand, from ASCII presets, from a txt file, or straight out of your Unity Localization string tables; preview coverage against the font's cmap before running; then prune with sfnttool.",
+  "unity": "2022.3",
+  "keywords": [
+    "font",
+    "subset",
+    "ttf",
+    "textmeshpro",
+    "localization",
+    "editor",
+    "tool"
+  ],
+  "author": {
+    "name": "plgamer",
+    "url": "https://github.com/plgamer"
+  },
+  "dependencies": {
+    "com.unity.textmeshpro": "3.0.6",
+    "com.unity.localization": "1.5.2"
+  },
+  "documentationUrl": "https://github.com/plgamer/unity-font-pruner",
+  "licensesUrl": "https://github.com/plgamer/unity-font-pruner/blob/main/LICENSE"
+}
