@@ -278,7 +278,7 @@ namespace FontPrunerTool
 
         /// <summary>
         /// Tools~ 目录（Unity 忽略带 ~ 的文件夹，jar 不会被导入成资产）。
-        /// 靠 AssetDatabase 定位本脚本，不写死绝对路径；Assets 和 UPM 包两种装法都支持。
+        /// 不写死绝对路径；装成 UPM 包和直接拖进 Assets 两种方式都支持。
         /// </summary>
         public static string ToolsDir
         {
@@ -286,14 +286,24 @@ namespace FontPrunerTool
             {
                 if (!string.IsNullOrEmpty(s_ToolsDir) && Directory.Exists(s_ToolsDir)) return s_ToolsDir;
 
+                // 1) 装成 UPM 包：AssetDatabase.FindAssets 搜不到包里的脚本（实测命中数为 0），
+                //    只能从程序集反查所属包，再用 resolvedPath 取磁盘真实位置。
+                //    git URL / registry 装的包躺在 Library/PackageCache 下，
+                //    AssetDatabase 给的 "Packages/包名/..." 只是虚拟路径，磁盘上不存在。
+                var fromPackage = FindToolsInPackage();
+                if (!string.IsNullOrEmpty(fromPackage))
+                {
+                    s_ToolsDir = fromPackage;
+                    return s_ToolsDir;
+                }
+
+                // 2) 直接拖进 Assets：这时 AssetDatabase 才能定位到本脚本
                 foreach (var guid in AssetDatabase.FindAssets("FontPrunerCore t:MonoScript"))
                 {
                     var assetPath = AssetDatabase.GUIDToAssetPath(guid);
                     if (!assetPath.EndsWith("/FontPrunerCore.cs", StringComparison.Ordinal)) continue;
 
-                    var dir = ResolveOnDisk(assetPath);
-                    if (string.IsNullOrEmpty(dir)) continue;
-
+                    var dir = Path.GetDirectoryName(Path.Combine(FontPrunerSettings.ProjectRoot, assetPath));
                     var candidate = Path.Combine(dir, "Tools~");
                     if (!Directory.Exists(candidate)) continue;
 
@@ -301,28 +311,25 @@ namespace FontPrunerTool
                     return s_ToolsDir;
                 }
 
-                // 兜底：按约定路径
+                // 3) 兜底：按约定路径
                 s_ToolsDir = Path.Combine(Application.dataPath, "Editor/FontPruner/Tools~");
                 return s_ToolsDir;
             }
         }
 
         /// <summary>
-        /// 把 AssetDatabase 的资源路径换算成磁盘真实目录。
-        /// Assets/ 下直接拼工程根即可；Packages/ 下必须走 PackageInfo.resolvedPath，
-        /// 因为 git URL / registry 装的包实际躺在 Library/PackageCache 里，
-        /// AssetDatabase 给的 "Packages/包名/..." 只是虚拟路径，磁盘上并不存在。
+        /// 本程序集若属于某个 UPM 包，就在包根下递归找 Tools~。
+        /// 包目录很小，递归代价可忽略，好处是不依赖 Tools~ 在包里的层级。
+        /// 不在包里（直接拖进 Assets）时返回 null。
         /// </summary>
-        static string ResolveOnDisk(string assetPath)
+        static string FindToolsInPackage()
         {
-            var pkg = UnityEditor.PackageManager.PackageInfo.FindForAssetPath(assetPath);
-            if (pkg != null && !string.IsNullOrEmpty(pkg.resolvedPath) && !string.IsNullOrEmpty(pkg.assetPath))
-            {
-                var rel = assetPath.Substring(pkg.assetPath.Length).TrimStart('/');
-                return Path.GetDirectoryName(Path.Combine(pkg.resolvedPath, rel));
-            }
+            var pkg = UnityEditor.PackageManager.PackageInfo.FindForAssembly(typeof(FontPrunerRunner).Assembly);
+            if (pkg == null || string.IsNullOrEmpty(pkg.resolvedPath) || !Directory.Exists(pkg.resolvedPath))
+                return null;
 
-            return Path.GetDirectoryName(Path.Combine(FontPrunerSettings.ProjectRoot, assetPath));
+            var hits = Directory.GetDirectories(pkg.resolvedPath, "Tools~", SearchOption.AllDirectories);
+            return hits.Length > 0 ? hits[0] : null;
         }
 
         public static string JarPath => Path.Combine(ToolsDir, "bin/sfnttool.jar");
