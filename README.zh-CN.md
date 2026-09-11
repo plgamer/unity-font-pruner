@@ -25,10 +25,11 @@
 |---|---|
 | Unity | 2022.3（只在这个版本上验证过；代码没用到更新的 API，更早的 LTS 大概率也能跑） |
 | Java | JRE 或 JDK，在 `PATH`、`JAVA_HOME`，或在窗口里手动指定。已验证 Temurin 11 |
+| hb-subset | HarfBuzz（`brew install harfbuzz`）——只有裁剪 CFF/OTF 轮廓字体时才需要；纯 TrueType 不需要 |
 | 依赖包 | `com.unity.textmeshpro`、`com.unity.localization`——已声明为依赖，UPM 会自动装 |
 
-输入字体必须是 **TrueType 轮廓的 `.ttf`**。底层 sfnttool 不支持 CFF/OpenType
-（`.otf`）轮廓。
+支持两种轮廓的字体：TrueType（`.ttf`，走 sfnttool）与 CFF/OpenType
+（`.otf`/`OTTO`，走 HarfBuzz hb-subset）。TTC 集合不受支持。
 
 ## 安装
 

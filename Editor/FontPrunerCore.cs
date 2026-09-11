@@ -55,7 +55,8 @@ namespace FontPrunerTool
         public bool stripOrphanTables = true;
 
         // 环境
-        public string javaPath = ""; // 空 = 自动探测
+        public string javaPath = ""; // 空 = 自动探测（sfnttool 用）
+        public string hbSubsetPath = ""; // 空 = 从 PATH 探测；CFF/OTF 轮廓字体用 HarfBuzz hb-subset 精简
 
         public static string ProjectRoot => Directory.GetParent(Application.dataPath).FullName;
 
@@ -337,6 +338,135 @@ namespace FontPrunerTool
         }
     }
 
+    /// <summary>
+    /// 扫描运行时 C# 代码里字符串字面量（"" / @"" / $"" / $@""）中的非 ASCII 字符。
+    /// 配置表（.asset）覆盖的是"配置驱动"的文案；动态实例化的小字、状态、拼出来的提示
+    /// 往往写死在代码里，得靠这个扫。默认只扫游戏运行时目录，跳过注释与编辑器/测试/示例/第三方框架代码。
+    /// </summary>
+    public static class FontPrunerCSharpCode
+    {
+        // 默认扫描根（Assets 相对路径）。改成 Null 则回退扫描 Assets 下所有运行时 .cs。
+        static readonly string[] kDefaultRoots =
+        {
+            "Assets/Scripts/GameCore",
+            "Assets/Scripts/Gameplay",
+        };
+
+        public static string CollectCharacters(out int fileCount, out int charCount)
+        {
+            var found = new SortedSet<char>();
+            fileCount = 0;
+            var root = FontPrunerSettings.ProjectRoot;
+
+            foreach (var relRoot in kDefaultRoots)
+            {
+                var absRoot = Path.Combine(root, relRoot);
+                if (!Directory.Exists(absRoot)) continue;
+
+                foreach (var file in Directory.GetFiles(absRoot, "*.cs", SearchOption.AllDirectories))
+                {
+                    var rel = Path.Combine(relRoot, Path.GetRelativePath(absRoot, file)).Replace('\\', '/');
+                    if (ShouldSkip(rel)) continue;
+
+                    string text;
+                    try
+                    {
+                        text = File.ReadAllText(file, Encoding.UTF8);
+                    }
+                    catch
+                    {
+                        continue;
+                    }
+                    fileCount++;
+                    CollectFromSource(text, found);
+                }
+            }
+
+            var sb = new StringBuilder(found.Count);
+            foreach (var c in found) sb.Append(c);
+            charCount = sb.Length;
+            return sb.ToString();
+        }
+
+        /// <summary>跳过编辑器 / 测试 / 示例 / 第三方框架目录——它们不进游戏运行时，不会展示给玩家。</summary>
+        static bool ShouldSkip(string rel)
+        {
+            foreach (var seg in rel.Split('/'))
+            {
+                if (seg == "Editor" || seg == "Tests" || seg == "Test" ||
+                    seg == "Samples" || seg == "Example" || seg == "Pipeline")
+                    return true;
+            }
+            return false;
+        }
+
+        static void CollectFromSource(string text, SortedSet<char> found)
+        {
+            var i = 0;
+            var n = text.Length;
+            while (i < n)
+            {
+                var c = text[i];
+
+                // 行注释
+                if (c == '/' && i + 1 < n && text[i + 1] == '/')
+                {
+                    i = text.IndexOf('\n', i + 2);
+                    if (i < 0) break;
+                    i++;
+                    continue;
+                }
+                // 块注释
+                if (c == '/' && i + 1 < n && text[i + 1] == '*')
+                {
+                    var end = text.IndexOf("*/", i + 2, StringComparison.Ordinal);
+                    i = end < 0 ? n : end + 2;
+                    continue;
+                }
+                // 字符串字面量（处理 @"" 原样字符串与 "" 转义）
+                if (c == '"')
+                {
+                    var verbatim = i > 0 && text[i - 1] == '@';
+                    i++;
+                    while (i < n)
+                    {
+                        var sc = text[i];
+                        if (sc == '\\' && !verbatim)
+                        {
+                            i += 2;
+                            continue;
+                        }
+                        if (sc == '"')
+                        {
+                            if (verbatim && i + 1 < n && text[i + 1] == '"') { i += 2; continue; }
+                            i++;
+                            break;
+                        }
+                        if (sc >= 0x80 && !char.IsControl(sc) && sc != '\uFFFD' && !char.IsSurrogate(sc))
+                            found.Add(sc);
+                        i++;
+                    }
+                    continue;
+                }
+                // 字符字面量 ''：跳过内容，防止把单字符标识当字符串收进来
+                if (c == '\'')
+                {
+                    i++;
+                    while (i < n)
+                    {
+                        var sc = text[i];
+                        if (sc == '\\') { i += 2; continue; }
+                        if (sc == '\'') { i++; break; }
+                        i++;
+                    }
+                    continue;
+                }
+
+                i++;
+            }
+        }
+    }
+
     public static class FontPrunerRunner
     {
         public class Result
@@ -466,9 +596,42 @@ namespace FontPrunerTool
 
         static string WhichJava()
         {
+            return WhichTool("java");
+        }
+
+        /// <summary>
+        /// 按优先级探测 hb-subset（HarfBuzz，用于 CFF/OTF 轮廓字体精简）。
+        /// source 回填命中来源，便于在 UI 上显示。
+        /// </summary>
+        public static string ResolveHbSubset(FontPrunerSettings settings, out string source)
+        {
+            if (settings != null && !string.IsNullOrEmpty(settings.hbSubsetPath))
+            {
+                if (File.Exists(settings.hbSubsetPath)) { source = "手动指定"; return settings.hbSubsetPath; }
+                source = $"手动指定的路径不存在：{settings.hbSubsetPath}";
+                return null;
+            }
+#if UNITY_EDITOR_WIN
+            source = null;
+            return null; // Windows 需要单独安装 HarfBuzz 并在窗口里手动指定路径
+#else
+            var found = WhichTool("hb-subset");
+            if (found != null) { source = "PATH"; return found; }
+            // Homebrew 在非登录 shell 里可能不在 PATH，兜底几个常见装法
+            foreach (var p in new[] { "/opt/homebrew/bin/hb-subset", "/usr/local/bin/hb-subset", "/usr/bin/hb-subset" })
+            {
+                if (File.Exists(p)) { source = p.StartsWith("/usr/bin", StringComparison.Ordinal) ? "系统" : "Homebrew"; return p; }
+            }
+            source = null;
+            return null;
+#endif
+        }
+
+        static string WhichTool(string name)
+        {
             try
             {
-                var psi = new ProcessStartInfo("/usr/bin/which", "java")
+                var psi = new ProcessStartInfo("/usr/bin/which", name)
                 {
                     UseShellExecute = false,
                     RedirectStandardOutput = true,
@@ -485,40 +648,58 @@ namespace FontPrunerTool
             }
         }
 
+        /// <summary>字体轮廓/容器类型，决定用哪套裁剪工具。</summary>
+        public enum OutlineKind
+        {
+            Unknown,   // 不是有效字体（detail 里带原因）
+            Ttc,       // TTC 集合，不支持
+            TrueType,  // glyf 轮廓 → sfnttool
+            Cff,       // OTTO/CFF 轮廓 → hb-subset
+        }
+
         /// <summary>
-        /// 检查字体是否是 sfnttool 能处理的 TrueType（必须有 glyf 表）。
+        /// 读 sfnt 版本判断轮廓类型。错误时返回 Unknown 并在 reason 里带原因。
+        /// </summary>
+        public static OutlineKind DetectOutline(string absolutePath, out string reason)
+        {
+            reason = null;
+            try
+            {
+                if (!File.Exists(absolutePath)) { reason = "文件不存在"; return OutlineKind.Unknown; }
+                using var fs = File.OpenRead(absolutePath);
+                using var br = new BinaryReader(fs);
+
+                if (fs.Length < 12) { reason = "文件过小，不是有效字体"; return OutlineKind.Unknown; }
+                var version = ReadUInt32BE(br);
+                if (version == 0x74746366u) return OutlineKind.Ttc;                       // "ttcf"
+                if (version == 0x4F54544Fu) return OutlineKind.Cff;                       // "OTTO"
+                if (version == 0x00010000u || version == 0x74727565u) return OutlineKind.TrueType;
+                reason = "无法识别的字体格式";
+                return OutlineKind.Unknown;
+            }
+            catch (Exception e)
+            {
+                reason = $"读取字体失败：{e.Message}";
+                return OutlineKind.Unknown;
+            }
+        }
+
+        /// <summary>
+        /// 检查字体能否精简。TrueType 与 CFF/OTF 都支持（分别走 sfnttool / hb-subset）；
         /// OK 返回 null，否则返回给用户看的原因。
         /// </summary>
         public static string ValidateFont(string absolutePath)
         {
-            try
+            var kind = DetectOutline(absolutePath, out var reason);
+            switch (kind)
             {
-                if (!File.Exists(absolutePath)) return "文件不存在";
-                using var fs = File.OpenRead(absolutePath);
-                using var br = new BinaryReader(fs);
-
-                if (fs.Length < 12) return "文件过小，不是有效字体";
-                var version = ReadUInt32BE(br);
-                if (version == 0x74746366u) return "TTC 字体集合不支持，请先拆成单个 ttf";
-                if (version == 0x4F54544Fu) return "OTF/CFF 轮廓字体不支持（sfnttool 只能精简 TrueType glyf 轮廓）";
-                if (version != 0x00010000u && version != 0x74727565u) return "无法识别的字体格式";
-
-                var numTables = ReadUInt16BE(br);
-                br.ReadBytes(6); // searchRange / entrySelector / rangeShift
-                var hasGlyf = false;
-                for (var i = 0; i < numTables; i++)
-                {
-                    if (fs.Position + 16 > fs.Length) break;
-                    var tag = Encoding.ASCII.GetString(br.ReadBytes(4));
-                    br.ReadBytes(12); // checksum / offset / length
-                    if (tag == "glyf") { hasGlyf = true; break; }
-                }
-                if (!hasGlyf) return "字体没有 glyf 表（可能是 CFF 轮廓），sfnttool 无法精简";
-                return null;
-            }
-            catch (Exception e)
-            {
-                return $"读取字体失败：{e.Message}";
+                case OutlineKind.TrueType:
+                case OutlineKind.Cff:
+                    return null;
+                case OutlineKind.Ttc:
+                    return "TTC 字体集合不支持，请先拆成单个字体";
+                default:
+                    return reason ?? "无法识别的字体格式";
             }
         }
 
@@ -526,12 +707,6 @@ namespace FontPrunerTool
         {
             var b = br.ReadBytes(4);
             return (uint)((b[0] << 24) | (b[1] << 16) | (b[2] << 8) | b[3]);
-        }
-
-        static ushort ReadUInt16BE(BinaryReader br)
-        {
-            var b = br.ReadBytes(2);
-            return (ushort)((b[0] << 8) | b[1]);
         }
 
         /// <summary>
@@ -542,24 +717,41 @@ namespace FontPrunerTool
         {
             var results = new List<Result>();
 
-            var java = ResolveJava(settings, out _);
-            if (string.IsNullOrEmpty(java))
+            var root = FontPrunerSettings.ProjectRoot;
+
+            // 预判这批字体各自需要哪套裁剪工具：
+            // TrueType（glyf）→ sfnttool(java)；CFF/OTF（"OTTO"）→ HarfBuzz hb-subset。
+            var needSfnttool = false;
+            var needHbSubset = false;
+            foreach (var fp in settings.fontPaths)
             {
-                results.Add(Fail("(环境)", "找不到 java，请安装 JDK 或在窗口里手动指定 java 路径"));
-                return results;
+                var k = DetectOutline(ToAbsolute(root, fp), out _);
+                if (k == OutlineKind.TrueType) needSfnttool = true;
+                else if (k == OutlineKind.Cff) needHbSubset = true;
             }
-            if (!JarExists)
-            {
-                results.Add(Fail("(环境)", $"找不到 sfnttool.jar：{JarPath}"));
-                return results;
-            }
+
             if (string.IsNullOrEmpty(normalizedChars))
             {
                 results.Add(Fail("(字符)", "字符集为空"));
                 return results;
             }
-
-            var root = FontPrunerSettings.ProjectRoot;
+            var java = needSfnttool ? ResolveJava(settings, out _) : null;
+            if (needSfnttool && string.IsNullOrEmpty(java))
+            {
+                results.Add(Fail("(环境)", "需要裁剪 TrueType 字体但找不到 java，请安装 JDK 或在窗口里手动指定 java 路径"));
+                return results;
+            }
+            if (needSfnttool && !JarExists)
+            {
+                results.Add(Fail("(环境)", $"需要裁剪 TrueType 字体但找不到 sfnttool.jar：{JarPath}"));
+                return results;
+            }
+            if (needHbSubset && string.IsNullOrEmpty(ResolveHbSubset(settings, out _)))
+            {
+                results.Add(Fail("(环境)",
+                    "包含 CFF/OTF 轮廓字体，但找不到 hb-subset（HarfBuzz）。请安装 HarfBuzz 或在窗口里手动指定 hb-subset 路径。"));
+                return results;
+            }
 
             // sfnttool 的 EncodingDetect 能正确识别无 BOM 的 UTF-8（含纯中文），不写 BOM
             var charsetFile = Path.Combine(root, "Temp/FontPruner/charset.txt");
@@ -648,20 +840,37 @@ namespace FontPrunerTool
                 var tempOutput = Path.Combine(root, "Temp/FontPruner", nameNoExt + ".pruned" + ext);
                 if (File.Exists(tempOutput)) File.Delete(tempOutput);
 
-                var args = new StringBuilder();
-                args.Append("-jar ").Append(Quote(JarPath));
-                if (settings.stripHints) args.Append(" -h");
-                // -c 会吞掉到倒数第三个参数为止（SfntTool.java:79），必须放在所有选项之后
-                args.Append(" -c ").Append(Quote(charsetFile))
-                    .Append(' ').Append(Quote(inputAbs))
-                    .Append(' ').Append(Quote(tempOutput));
-
-                var exec = Execute(java, args.ToString(), root, out var stdout, out var stderr);
+                // 按轮廓类型选工具：TrueType 走 sfnttool(java)，CFF/OTF 走 hb-subset
+                var outline = DetectOutline(inputAbs, out _);
+                string toolName, stdout, stderr;
+                int exec;
+                if (outline == OutlineKind.Cff)
+                {
+                    toolName = "hb-subset";
+                    var hb = ResolveHbSubset(settings, out _);
+                    var sb = new StringBuilder();
+                    sb.Append(Quote(inputAbs)).Append(" --output-file=").Append(Quote(tempOutput))
+                      .Append(" --text-file=").Append(Quote(charsetFile));
+                    if (settings.stripHints) sb.Append(" --no-hinting");
+                    exec = Execute(hb, sb.ToString(), root, out stdout, out stderr);
+                }
+                else
+                {
+                    toolName = "sfnttool";
+                    var args = new StringBuilder();
+                    args.Append("-jar ").Append(Quote(JarPath));
+                    if (settings.stripHints) args.Append(" -h");
+                    // -c 会吞掉到倒数第三个参数为止（SfntTool.java:79），必须放在所有选项之后
+                    args.Append(" -c ").Append(Quote(charsetFile))
+                        .Append(' ').Append(Quote(inputAbs))
+                        .Append(' ').Append(Quote(tempOutput));
+                    exec = Execute(java, args.ToString(), root, out stdout, out stderr);
+                }
 
                 if (exec != 0 || !File.Exists(tempOutput) || new FileInfo(tempOutput).Length == 0)
                 {
                     var detail = string.IsNullOrWhiteSpace(stderr) ? stdout : stderr;
-                    results.Add(Fail(fontPath, $"sfnttool 执行失败（exit={exec}）\n{detail}"));
+                    results.Add(Fail(fontPath, $"{toolName} 执行失败（exit={exec}）\n{detail}"));
                     continue;
                 }
 

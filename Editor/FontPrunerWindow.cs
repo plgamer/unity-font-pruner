@@ -39,6 +39,7 @@ namespace FontPrunerTool
         // 各分区折叠状态
         bool _foldLocalization;
         bool _foldAssetScan;
+        bool _foldCSharpScan;
         bool _foldEnv;
 
         // 本地化表可选项（打开窗口时抓一次）
@@ -172,6 +173,9 @@ namespace FontPrunerTool
 
                 EditorGUILayout.Space(4);
                 DrawAssetScanSubSection();
+
+                EditorGUILayout.Space(4);
+                DrawCSharpScanSubSection();
             }
         }
 
@@ -267,6 +271,38 @@ namespace FontPrunerTool
                     AppendChars(collected);
                     NormalizeInPlace();
                     Debug.Log($"[FontPruner] 扫描了 {assetCount} 个 .asset，收集到 {charCount} 个非 ASCII 字符，" +
+                              $"合并去重后共 {_stats.Total} 个。");
+                }
+            }
+        }
+
+        void DrawCSharpScanSubSection()
+        {
+            _foldCSharpScan = EditorGUILayout.Foldout(_foldCSharpScan, "从 C# 运行时代码收集字符", true);
+            if (!_foldCSharpScan) return;
+
+            using (new EditorGUI.IndentLevelScope())
+            {
+                EditorGUILayout.LabelField(
+                    "扫描 GameCore / Gameplay 运行时 .cs 里字符串字面量（\"\" / @\"\" / $\"\" 等）的中文，" +
+                    "覆盖配置表扫不到、写死在代码里的动态文案（小字标签、状态、拼出来的提示）。" +
+                    "自动排除注释、Editor / Tests / Samples / Pipeline 代码。",
+                    WrapMiniLabel);
+
+                if (GUILayout.Button("扫描并合并到上面的文本框"))
+                {
+                    var collected = FontPrunerCSharpCode.CollectCharacters(
+                        out var fileCount, out var charCount);
+
+                    if (fileCount == 0)
+                    {
+                        EditorUtility.DisplayDialog("字体精简", "没扫到运行时 .cs 文件（检查扫描根目录是否存在）。", "好");
+                        return;
+                    }
+
+                    AppendChars(collected);
+                    NormalizeInPlace();
+                    Debug.Log($"[FontPruner] 扫描了 {fileCount} 个运行时 .cs，收集到 {charCount} 个非 ASCII 字符，" +
                               $"合并去重后共 {_stats.Total} 个。");
                 }
             }
@@ -607,7 +643,7 @@ namespace FontPrunerTool
 
         void DrawEnvSection()
         {
-            _foldEnv = EditorGUILayout.Foldout(_foldEnv, "④ 环境（Java / sfnttool.jar）", true);
+            _foldEnv = EditorGUILayout.Foldout(_foldEnv, "④ 环境（Java / hb-subset）", true);
             if (!_foldEnv) return;
 
             using (new EditorGUILayout.VerticalScope(EditorStyles.helpBox))
@@ -636,9 +672,36 @@ namespace FontPrunerTool
                     if (GUILayout.Button("自动", GUILayout.Width(48))) _settings.javaPath = "";
                 }
 
+                EditorGUILayout.Space(4);
+                var hb = FontPrunerRunner.ResolveHbSubset(_settings, out var hbSource);
+                if (string.IsNullOrEmpty(hb))
+                {
+                    EditorGUILayout.HelpBox(
+                        "找不到 hb-subset（HarfBuzz）。TrueType 裁剪不需要它，" +
+                        "但裁剪 CFF/OTF 轮廓字体时必需。macOS 可 brew install harfbuzz。",
+                        MessageType.Warning);
+                }
+                else
+                {
+                    EditorGUILayout.LabelField($"hb-subset（来源：{hbSource}，用于 CFF/OTF）", EditorStyles.miniBoldLabel);
+                    EditorGUILayout.LabelField(hb, WrapMiniLabel);
+                }
+
+                using (new EditorGUILayout.HorizontalScope())
+                {
+                    _settings.hbSubsetPath = EditorGUILayout.TextField("手动指定 hb-subset", _settings.hbSubsetPath);
+                    if (GUILayout.Button("浏览", GUILayout.Width(48)))
+                    {
+                        var picked = EditorUtility.OpenFilePanel("选择 hb-subset 可执行文件", "/usr/local/bin", "");
+                        if (!string.IsNullOrEmpty(picked)) _settings.hbSubsetPath = picked;
+                    }
+                    if (GUILayout.Button("自动", GUILayout.Width(48))) _settings.hbSubsetPath = "";
+                }
+
+                EditorGUILayout.Space(4);
                 if (FontPrunerRunner.JarExists)
                 {
-                    EditorGUILayout.LabelField("sfnttool.jar", EditorStyles.miniBoldLabel);
+                    EditorGUILayout.LabelField("sfnttool.jar（用于 TrueType）", EditorStyles.miniBoldLabel);
                     EditorGUILayout.LabelField(FontPrunerRunner.JarPath, WrapMiniLabel);
                 }
                 else
@@ -659,10 +722,21 @@ namespace FontPrunerTool
             }
 
             var java = FontPrunerRunner.ResolveJava(_settings, out _);
+            // 按字体轮廓类型判断需要哪些工具：TrueType→sfnttool，CFF/OTF→hb-subset
+            var needSfnttool = false;
+            var needHb = false;
+            var reasons = new List<string>();
+            foreach (var fp in _settings.fontPaths)
+            {
+                var kind = FontPrunerRunner.DetectOutline(
+                    FontPrunerRunner.ToAbsolute(FontPrunerSettings.ProjectRoot, fp), out _);
+                if (kind == FontPrunerRunner.OutlineKind.TrueType) needSfnttool = true;
+                else if (kind == FontPrunerRunner.OutlineKind.Cff) needHb = true;
+            }
             var blocked = _stats.Total == 0
                           || _settings.fontPaths.Count == 0
-                          || string.IsNullOrEmpty(java)
-                          || !FontPrunerRunner.JarExists;
+                          || (needSfnttool && (string.IsNullOrEmpty(java) || !FontPrunerRunner.JarExists))
+                          || (needHb && string.IsNullOrEmpty(FontPrunerRunner.ResolveHbSubset(_settings, out _)));
 
             using (new EditorGUI.DisabledScope(blocked))
             {
@@ -675,12 +749,14 @@ namespace FontPrunerTool
 
             if (blocked)
             {
-                var reasons = new List<string>();
                 if (_stats.Total == 0) reasons.Add("字符集为空");
                 if (_settings.fontPaths.Count == 0) reasons.Add("没有添加字体");
-                if (string.IsNullOrEmpty(java)) reasons.Add("找不到 java");
-                if (!FontPrunerRunner.JarExists) reasons.Add("找不到 sfnttool.jar");
-                EditorGUILayout.LabelField("暂不能执行：" + string.Join("、", reasons), EditorStyles.miniLabel);
+                if (needSfnttool && string.IsNullOrEmpty(java)) reasons.Add("找不到 java（TrueType 需要）");
+                if (needSfnttool && !FontPrunerRunner.JarExists) reasons.Add("找不到 sfnttool.jar");
+                if (needHb && string.IsNullOrEmpty(FontPrunerRunner.ResolveHbSubset(_settings, out _)))
+                    reasons.Add("找不到 hb-subset（CFF/OTF 需要）");
+                if (reasons.Count > 0)
+                    EditorGUILayout.LabelField("暂不能执行：" + string.Join("、", reasons), EditorStyles.miniLabel);
             }
         }
 

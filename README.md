@@ -30,10 +30,11 @@ It also cleans up after `sfnttool`, which leaves orphaned `vhea` / `VORG` /
 |---|---|
 | Unity | 2022.3 (the only version this is verified on; it does not use any newer API, so earlier LTS releases will likely work) |
 | Java | A JRE or JDK on `PATH`, in `JAVA_HOME`, or pointed at manually in the window. Verified on Temurin 11 |
+| hb-subset | HarfBuzz (`brew install harfbuzz`) — only needed to trim CFF/OTF-outline fonts; not required for pure TrueType |
 | Packages | `com.unity.textmeshpro`, `com.unity.localization` — both are declared as dependencies and installed automatically via UPM |
 
-Input fonts must be **TrueType-outline `.ttf`**. CFF/OpenType (`.otf`) outlines
-are not supported by the underlying sfnttool.
+Both outline kinds are supported: TrueType (`.ttf`, via sfnttool) and CFF/OpenType
+(`.otf`/`OTTO`, via HarfBuzz hb-subset). TTC font collections are not supported.
 
 ## Install
 
