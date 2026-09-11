@@ -38,6 +38,7 @@ namespace FontPrunerTool
 
         // 各分区折叠状态
         bool _foldLocalization;
+        bool _foldAssetScan;
         bool _foldEnv;
 
         // 本地化表可选项（打开窗口时抓一次）
@@ -168,6 +169,9 @@ namespace FontPrunerTool
 
                 EditorGUILayout.Space(4);
                 DrawLocalizationSubSection();
+
+                EditorGUILayout.Space(4);
+                DrawAssetScanSubSection();
             }
         }
 
@@ -233,6 +237,37 @@ namespace FontPrunerTool
                         if (next) selected.Add(name);
                         else selected.Remove(name);
                     }
+                }
+            }
+        }
+
+        void DrawAssetScanSubSection()
+        {
+            _foldAssetScan = EditorGUILayout.Foldout(_foldAssetScan, "从 ScriptableObject (.asset) 收集字符", true);
+            if (!_foldAssetScan) return;
+
+            using (new EditorGUI.IndentLevelScope())
+            {
+                EditorGUILayout.LabelField(
+                    "扫描 Assets 下所有 .asset 资产（Excel 导出的配置表等）的序列化文本，" +
+                    "把其中的中文等非 ASCII 字符合并到上面的文本框。ASCII 字符请用上面的预设追加。",
+                    WrapMiniLabel);
+
+                if (GUILayout.Button("扫描并合并到上面的文本框"))
+                {
+                    var collected = FontPrunerScriptableObjects.CollectCharacters(
+                        out var assetCount, out var charCount);
+
+                    if (assetCount == 0)
+                    {
+                        EditorUtility.DisplayDialog("字体精简", "Assets 下没找到 ScriptableObject (.asset) 资产。", "好");
+                        return;
+                    }
+
+                    AppendChars(collected);
+                    NormalizeInPlace();
+                    Debug.Log($"[FontPruner] 扫描了 {assetCount} 个 .asset，收集到 {charCount} 个非 ASCII 字符，" +
+                              $"合并去重后共 {_stats.Total} 个。");
                 }
             }
         }

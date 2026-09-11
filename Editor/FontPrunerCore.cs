@@ -257,6 +257,86 @@ namespace FontPrunerTool
         }
     }
 
+    /// <summary>
+    /// 扫描工程内的 ScriptableObject (.asset) 资产，收集其中用到的字符。
+    /// 直接读 .asset 的序列化文本而不反序列化资产：速度快、内存稳。
+    /// 文本序列化（本项目采用）下，字符串字段（配置表、文案）里的中文都以 UTF-8 原文存在文件里。
+    /// </summary>
+    public static class FontPrunerScriptableObjects
+    {
+        public static string CollectCharacters(out int assetCount, out int charCount)
+        {
+            var found = new SortedSet<char>();
+            assetCount = 0;
+
+            var guids = AssetDatabase.FindAssets("t:ScriptableObject");
+            for (var i = 0; i < guids.Length; i++)
+            {
+                if (i % 32 == 0)
+                    EditorUtility.DisplayProgressBar(
+                        "字体精简", "扫描 ScriptableObject (.asset) 资产…", (float)i / guids.Length);
+
+                var path = AssetDatabase.GUIDToAssetPath(guids[i]);
+                // 只扫 Assets 下的用户资产；包缓存里的资产对游戏字体没有意义
+                if (string.IsNullOrEmpty(path) || !path.StartsWith("Assets/", StringComparison.Ordinal)) continue;
+
+                string text;
+                try
+                {
+                    text = File.ReadAllText(Path.Combine(FontPrunerSettings.ProjectRoot, path));
+                }
+                catch (Exception e)
+                {
+                    Debug.LogWarning($"[FontPruner] 读取 {path} 失败，跳过：{e.Message}");
+                    continue;
+                }
+                assetCount++;
+
+                for (var j = 0; j < text.Length; j++)
+                {
+                    var c = text[j];
+
+                    // Unity 的 YAML 会把非 ASCII 写成 \uXXXX 转义（如 "1\u7EA7\u5145\u7535\u6869"），
+                    // 不解码的话整份中文配置都会漏掉
+                    if (c == '\\' && j + 5 < text.Length && text[j + 1] == 'u' && TryHex4(text, j + 2, out var decoded))
+                    {
+                        found.Add(decoded);
+                        j += 5;
+                        continue;
+                    }
+
+                    // ASCII 由预设覆盖；控制字符不是字形；U+FFFD 是二进制/坏字节的替身
+                    if (c < 0x80 || char.IsControl(c) || c == '\uFFFD') continue;
+                    found.Add(c);
+                }
+            }
+
+            EditorUtility.ClearProgressBar();
+
+            var sb = new StringBuilder(found.Count);
+            foreach (var c in found) sb.Append(c);
+            charCount = sb.Length;
+            return sb.ToString();
+        }
+
+        static bool TryHex4(string s, int start, out char result)
+        {
+            var code = 0;
+            for (var k = 0; k < 4; k++)
+            {
+                var d = s[start + k];
+                int v;
+                if (d >= '0' && d <= '9') v = d - '0';
+                else if (d >= 'a' && d <= 'f') v = d - 'a' + 10;
+                else if (d >= 'A' && d <= 'F') v = d - 'A' + 10;
+                else { result = '\0'; return false; }
+                code = (code << 4) | v;
+            }
+            result = (char)code;
+            return true;
+        }
+    }
+
     public static class FontPrunerRunner
     {
         public class Result
